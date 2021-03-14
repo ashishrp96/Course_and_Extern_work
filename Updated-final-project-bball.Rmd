@@ -1,0 +1,319 @@
+---
+title: "Final Project: Predicting NCAA Win Rate"
+author: "Brian Yi, Ashish Podduturi, Rashid Malik"
+output:
+  html_document:
+    toc: no
+    df_print: paged
+---
+```{r}
+#installing packages
+#install.packages("tidyverse")
+#install.packages("leaps")
+#install.packages("mixlm")
+#install.packages("xtable")
+#install.packages("foreign")
+#install.packages("car")
+#install.packages("MASS")
+#install.packages("stats")
+
+```
+
+# Introduction
+
+**Purpose:** With the shutdown of professional basketball and March Madness due to the Corona Virus, avid fans of basketball have been left slightly sad in its wake. We decided to reflect on the past five years of NCAA basketball in an attempt to compensate for this. We are building a model that can predict whether a team will win based on various team peformance metrics such as offensive efficiency, two point shooting percentage, defensive rating etc.
+
+**Method of Approach:** Our dataset for NCAA team wins between 2015-2020 can be found in the following link: [Data Set Link](https://www.kaggle.com/andrewsundberg/college-basketball-dataset/data#). This data consists of 1,757 observations and 24 columns.
+
+Our goal is to compare any models we choose from our various model selection techniques and compare it to the full model that we initially start with. We will conduct various residual analysis, model goodness of fit metrics, and outlier assessment to determine which model is the best in predicting a team's performance in any given NCAA season.
+
+```{r message=FALSE, include=FALSE}
+# Libraries
+library(tidyverse)
+library(leaps)
+library(mixlm)
+library(xtable)
+library(foreign)
+library(car)
+library(stats)
+```
+
+# Data Import
+
+```{r}
+# Import csv file (Not xlsx file)
+raw_data <- read.csv('cbb.csv')
+head(raw_data)
+```
+Luckily, we do not have null values to worry about in our data set so we move on to transforming our data based on feature selection.
+
+## Scatterplots
+
+```{r warning=FALSE}
+pairs(raw_data)
+```
+
+The above is the whole assemble of scatter plots of all the features in our data allows us to see individually whether any regressors have a correlation with our response variable, winrate. After looking at the individual scatter plots (too small to see here), we decided to clean the data in the following fashion:
+
+  * Team (`TEAM`): Team identity should not play as much of a factor as the other variables that define a team's basketball performance.
+  * Conference (`CONF`): We will remove conferences for now and assume each conference for the teams assembled below are relatively equal. If our results are unsatisfactory, we will add in conference as a variable to see if that would improve model accuracy.
+  * Postseason (`POSTSEASON`): Our model is focused specifically on the regular season and not on the post season.
+  * Seed (`SEED`): A team's seed is usually based on the other variables in our model that define's a team's performance; thus, we felt that this variable is redundant given our other metrics.
+  * Year (`YEAR`): We assume that teams on average are equally skilled between a four year span.
+  * Games (`G`) and Wins (`W`): Games and wins are both removed and replaced with our own variable `WIN_RATE`, which equals to Wins / Games.
+```{r}
+# Data transformation
+# - Removed categorical variables and unnecessary variables
+data1 <- raw_data %>%
+  mutate(WIN_RATE = 100*round(raw_data$W / raw_data$G, 4)) %>% 
+  select(WIN_RATE, everything(), -c(TEAM, CONF, POSTSEASON, SEED, YEAR, G, W))
+row.names(data1) <- 1:nrow(data1)
+data1
+```
+
+# Model Selection
+
+After tidying up our data and selecting our features, we decide to select our model through forward selection, backward elimination, and step-wise regression. We create a full multiple linear regression model to see how accurate our model is with all the features we selected.
+```{r}
+# Full model with all variables
+mdl1_full <- lm(WIN_RATE~ADJOE+ADJDE+BARTHAG+EFG_O+EFG_D+TOR+TORD+ORB+
+                         DRB+FTR+FTRD+X2P_O+X2P_D+X3P_O+X3P_D+ADJ_T+WAB, data=data1)
+summary(mdl1_full)
+```
+Our full model has a total of 17 features, such that 13 are significant on a 0.1% level, 1 is significant on a 1% level, and three are insignificant on a 5% level. An adjusted R-squared value of 0.9329 is exceptionally high indicating that our full model already does a good job predicting a team's winrate. Our goal is to try to build a better model with our model selection methods mentioned earlier, begining with forward selection.
+
+## Forward Selection
+
+```{r include=FALSE}
+# Null model
+mdl1_null <- lm(WIN_RATE~1, data=data1)
+
+# Forward Selection
+mdl1_f <- step(mdl1_null, scope=list(lower=mdl1_null, upper=mdl1_full), direction="forward")
+```
+
+```{r}
+mdl1_f
+```
+Forward selection starts with a constant model and adds a regressor to the model each iteration based on the highest correlation; in our case, forward selection chose a model with 15 variables. It eliminated `X3P_D` and `BARTHAG`, 2 of our individually insignificant variables in our full model. `BARTHAG` is the power rating of a team, which is their chances of beating an average team in the league. Since this rating was probably created based on the other features in our model, we can see how this feature becomes insignificant in the presence of the remaining features. `X3P_D` is the three point shooting that one team allows; in other words, it is how well a team defends against three point shooting. This variable being insignificant is surprising since the rise of 3-point shooting in the past few years in professional play. Do note that `X3P_O`, which is the offensive efficiency of 3 point shooting is still within our model so we also suspect that multi-collinearity may have eliminated `X3P_D`.
+
+## Backward Elimination
+
+The downside to forward selection is that no regressors are ever removed, so an earlier chosen regressor may become insignificant with the addition of new variables. This flaw does not appear in backward elimination since it starts with a full model and removes a regressor each iteration. We run backward elimination to cover for this flaw and see if we get a different model.
+```{r include=FALSE}
+# Backward Elimination
+mdl1_b <- step(mdl1_full, scope=list(lower=mdl1_null, upper=mdl1_full), direction="backward")
+```
+
+```{r}
+mdl1_b
+```
+Backward elimination selected the exact model as forward selection; note that this will not always be the case since forward selection and backward elimination fundamentally differ in methodology.
+
+## Step-wise Regression
+
+Backward elimination also has its own flaw since a regressor removed in an earlier iteration may be super impactful or significant in future iterations but will never be considered again. Stepwise regression is a good mix of forward selection and backward elimination since it functions as forward selection would, but checks each iteration for any insignificant regressors that it can drop, similar to backward elimination. 
+```{r include=FALSE}
+# Step-wise Regression
+mdl1_s <- step(mdl1_null, scope = list(upper=mdl1_full), data=data1, direction="both")
+```
+
+```{r}
+mdl1_s
+```
+Step-wise regression also selects the same model as forward selection and backward elimination. Let's do some further analysis to see if this model is an improvement over our full model.
+
+# Model Analysis
+
+First, let us look at our model with respect to our observations.
+```{r}
+obsy <- data1$WIN_RATE 
+yhat_y <- cbind(predict(mdl1_s), data1$WIN_RATE)
+
+plot(data1$WIN_RATE, predict(mdl1_s), col='blue', pch=20, type='p', las=1, 
+     xlab="Observed", ylab="Predicted", main='Observed vs Predicted')
+abline(0, 1)
+```
+
+Our graph shows that linearity holds pretty well for our model.
+
+## Hypothesis Testing
+
+Next, let's conduct some hypothesis tests to confirm whether our model is a good fit for the data.
+```{r}
+summary(mdl1_s)
+anova(mdl1_s)
+```
+We initially see that the adjusted R-squared for our new model is exactly the same as the adjusted R-squared of our full model. This tells us that our model selection removed the variables that had no benefit to decreasing the error of our model.
+
+We start with an ANOVA test to measure the efficacy of our model's regressors.
+
+$H_0: \beta_1 = \beta_2 = ... = \beta_i =  0$ for $i = 1,...,15$
+
+$H_a:$ At least one $\beta_i \neq 0$ for $i = 1, ..., 15$
+
+Since f-statistic for the final model = $1628 > 1.67 = F(0.05, 15, 1741)$, we reject $H_0$. This means that at least one of our regressors has some sort of correlation with a team's winrate.
+
+We also conduct individual significance tests for each individual feature to see which regressors are significant. 
+
+$H_0: \beta_i = 0$ for $i = 1,...,15$
+
+$H_a: \beta_i \neq 0$ for $i = 1, ..., 15$
+
+All of our regressors are significant, which is already an improvement over our initial model. This time, 13 of our regressors are significant on a 0.1% level and two are significant on a 1% level.
+
+
+## Residual Analysis
+
+Since our model seems to be pretty good, we will check the assumptions for normality, linearity, and constant variance through some error analysis.
+```{r include=FALSE}
+library(MASS)
+```
+
+```{r}
+# Normality Prob Plot
+plot(mdl1_s, which =2, col="blue", main="Normal probability Plot")
+
+# Normality Prob with Studentized
+rstud_mdl1s = studres(mdl1_s)
+qqnorm(rstud_mdl1s, ylab="Studentized Residuals", xlab="Normal Scores",
+main="Q-Q Plot with Studentized Residual ")
+qqline(rstud_mdl1s)
+
+# Residuals vs Fits
+plot(mdl1_s, which = 1, col='blue')
+```
+
+Normal Probability plot indicates that the data follows normality and the model fit is ideal. All the points lie near the straight line and doesn't deviate much indicating a great fit except three data points which are indicated being farthest are also quite close to the line. The same plot with studentized residuals follows the straight line and indicates linear relationship which is ideal but also shows the same with three points being farthest from the line. We see that the same three points at 1250, 1267, and 1687 may be potential outliers.
+
+Our residuals vs fitted values plot has no clear pattern and seems randomly distributed, indicating that linearity is upheld. Furthermore, there is constant variance throughout our model. Overall, normality, linearity and constant variance assumptions for regression are upheld.
+
+# Model Selection Pt.2
+
+In addition to our 15 variable model we just analyzed, we wanted to run `regsubsets` to see if there is a model with less variables that can do as good of a job in predicting NCAA team winrates. Generally speaking, simpler is better as per Occam's Razor, and hopefully we can find a simpler model with less variables.
+```{r}
+# Selecting models with regsubsets
+tmp=regsubsets(WIN_RATE~ADJOE+ADJDE+BARTHAG+EFG_O+EFG_D+TOR+TORD+ORB+
+                         DRB+FTR+FTRD+X2P_O+X2P_D+X3P_O+X3P_D+ADJ_T+WAB,
+               data=data1, nbest=9, really.big=T, intercept=T)
+
+model_criteria <- function(tmp) {
+  names(summary(tmp))
+  
+  almdl=summary(tmp)[[1]]
+  RSQ=summary(tmp)[[2]]
+  SSE=summary(tmp)[[3]]
+  adjR2=summary(tmp)[[4]]
+  Cp=summary(tmp)[[5]]
+  BIC=summary(tmp)[[6]]
+  
+  fnl=cbind(almdl,SSE,RSQ,adjR2,Cp,BIC)
+  fnl2=fnl[order(-adjR2),]
+  
+  head(fnl2)
+}
+
+model_criteria(tmp)
+```
+This seems to indicate that the best model only utilizes 8 variables, and not the 15 variables as selected by our earlier model selection methods. My intuition is that this is because while our earlier methods stop when we find a model with fully significant predictors while regsubsets goes beyond that and looks for a model with the lowest SSE, Mallow's CP, and BIC.
+
+# Model 2 Analysis
+
+First, let us look at our model with respect to our observations.
+```{r}
+# New model
+mdl2 <- lm(WIN_RATE~ADJOE+ADJDE+EFG_O+EFG_D+TOR+TORD+DRB+WAB, data=data1)
+
+obsy <- data1$WIN_RATE 
+yhat_y <- cbind(predict(mdl2), data1$WIN_RATE)
+
+plot(data1$WIN_RATE, predict(mdl2), col='blue', pch=20, type='p', las=1, 
+     xlab="Observed", ylab="Predicted", main='Observed vs Predicted')
+abline(0, 1)
+```
+
+Our graph shows that linearity holds pretty well for our model.
+
+
+## Hypothesis Testing
+
+Let's again conduct some hypothesis tests to confirm whether our model is a good fit for the data.
+```{r}
+mdl2 <- lm(WIN_RATE~ADJOE+ADJDE+EFG_O+EFG_D+TOR+TORD+DRB+WAB, data=data1)
+summary(mdl2)
+```
+We see that the adjusted R-squared for this model is 0.9182, which is less than that of our last model that had an adjusted R-squared value of 0.9239.
+
+We again run an ANOVA test to measure the efficacy of our model's regressors.
+
+$H_0: \beta_1 = \beta_2 = ... = \beta_i =  0$ for $i = 1,...,8$
+
+$H_a:$ At least one $\beta_i \neq 0$ for $i = 1, ..., 8$
+
+Since f-statistic for the final model = $2465 > 1.94 = F(0.05, 8, 1741)$, we reject $H_0$. This means that at least one of our regressors has some sort of correlation with a team's winrate.
+
+We also conduct individual significance tests for each individual feature to see which regressors are significant. 
+
+$H_0: \beta_i = 0$ for $i = 1,...,8$
+
+$H_a: \beta_i \neq 0$ for $i = 1, ...,8$
+
+Unlike before, all our regressors are highly significant on a 0.1% level.
+
+## Residual Analysis
+
+Since our model seems to be pretty good, we again will check the assumptions for normality, linearity, and constant variance through some error analysis.
+```{r}
+# Normality Prob Plot
+plot(mdl2, which =2, col="blue", main="Normal probability Plot")
+
+# Normality Prob with Studentized
+rstud_mdl2 = studres(mdl2)
+qqnorm(rstud_mdl2, ylab="Studentized Residuals", xlab="Normal Scores",
+main="Q-Q Plot with Studentized Residual ")
+qqline(rstud_mdl2)
+
+# Residuals vs Fits
+plot(mdl2, which = 1, col='blue')
+```
+
+Normal Probability plot indicates that the data follows normality and the model fit is ideal. All the points lie near the straight line and doesn't deviate much indicating a great fit except three data points which are indicated being farthest are also quite close to the line. The same plot with studentized residuals follows the straight line and indicates linear relationship which is ideal but also shows the same with three points being farthest from the line. We see that the same three points at 747, 1267, and 1687 may be potential outliers.
+
+Our residuals vs fitted values plot has no clear pattern and seems randomly distributed, indicating that linearity is upheld. Furthermore, there is constant variance throughout our model. Overall, normality, linearity and constant variance assumptions for regression are upheld.
+
+## Outliers
+
+Before we discuss our final conclusions of which of our two new models is better, let us first look at individual points to see if there are any outliers or influential points that need to be removed. We do our outlier anlaysis using our first model since it boasted a higher adjusted R-squared.
+```{r}
+Residual=residuals(mdl1_s)
+Stand_Res= Residual/sigma(mdl1_s)
+Stand_Res[Stand_Res > 3]
+```
+Looking at the standarized residuals, we only have 4 points that have an absolute value greater than 3. Three of the four points, 747, 1267, 1687 are the same three extreme points we saw in our Normal Probability Plot earlier. Although standarized residuals are a good measurement, we also want to look at studentized residuals to see whether removing the point makes a significant impact on our model.
+
+---
+
+```{r}
+Student_Res=stdres(mdl1_s) 
+Student_Res[Student_Res > 3]
+```
+We see the same four points as outliers that are increasing our model's error and possibly skewing prediction accuracy. In order to determine whether these points affect our model's accuracy, we need to measure the influence of these observations.
+
+## Measures of Influence
+
+We use Cook's Distance to detect whether any of the outliers we saw earlier, or other observations are influential and potentially harmful to our model's accuracy.
+```{R}
+plot(mdl1_s, which = 4, col='blue')
+
+Lev_hii=hatvalues(mdl1_s)         
+CookD=cooks.distance(mdl1_s)  		    
+Y_Value=data1$WIN_RATE
+mdl1_inf=cbind.data.frame(Y_Value, Lev_hii, CookD)
+mdl1_inf
+```
+Here we see that points 170, 1267, and 1339 are influential on our model. This means that these points are very far from our the rest of observations, whether it is due to high leverage or high influence. We see that point 1267 that we saw among our outliers earlier is also influential. Thus, in order to improve our model, we would remove points 170, 1267, and 1339 from the data set. This is because these points with high influence could either decrease model accuracy by pulling our regression equation away from the rest of the observations, or have no effect on model accuracy but increase the model's total error.
+
+# Conclusion
+
+Consider the two models we analyzed where Model 1, with 15 variables, was found through step-wise regression and Model 2, with 8 variables, was found through `regsubsets`. Both models upheld regression assumptions in normality, linearity, and constant variance. While Model 1 had a higher adjusted R-squared value and can explain more of the variance in an NCAA's winrate, Model 2 has half the number of variables with a similar R-squared value of about 1% less. If we wanted to use a model with the goal of predicting a team's winrate with the utmost accuracy, we would go with Model 1. On the other hand, if we wanted to do any other analysis without needing data on eight extra variables, Model 2 is much more pragmatic and still sufficient with respect to accuracy.
+
